@@ -3,23 +3,31 @@ from __future__ import annotations
 import os
 import io
 import json
+import warnings
 from typing import Any, Optional
 
 from .base import BaseProvider, Batch
-from .util import require, map_config
+from .util import require, map_config, parse_structured_output
 from ..types import GenerationConfig, StructuredOutput
 
 
 class OpenAIProvider(BaseProvider):
     """OpenAI text generation using the Responses API only."""
 
+    def __init__(self, model: str, **kwargs: Any) -> None:
+        super().__init__(model, **kwargs)
+        self._client = None
+
     def _get_client(self):
+        if self._client is not None:
+            return self._client
         OpenAI = require("openai", "Install `openai` >= 1.0.0 and set OPENAI_API_KEY.").OpenAI
         api_key = self.options.get("api_key") or os.getenv("OPENAI_API_KEY")
         base_url = self.options.get("base_url") or os.getenv("OPENAI_BASE_URL")
         if not api_key and not base_url:
             raise RuntimeError("Provide OPENAI_API_KEY or a base_url for an OpenAI-compatible server.")
-        return OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
+        self._client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
+        return self._client
 
     def _params(self, cfg: GenerationConfig) -> dict[str, Any]:
         params: dict[str, Any] = {"model": self.model}
@@ -73,7 +81,9 @@ class OpenAIProvider(BaseProvider):
 
         resp = client.responses.create(**params)
         text = resp.output_text
-        return structured.parse(text) if structured is not None else text
+        if structured is not None:
+            return parse_structured_output(structured, text, "openai", "response")
+        return text
 
     def generate_batch(
         self,
@@ -94,13 +104,19 @@ class OpenAIProvider(BaseProvider):
         cfg = config or GenerationConfig()
         opts = batch_options or {}
         system = opts.get("system") or (cfg.extra.get("system") if cfg else None)
-        custom_ids = opts.get("custom_ids")
+        raw_custom_ids = opts.get("custom_ids")
 
         lines: list[str] = []
         schema = structured.json_schema() if structured is not None else None
         base_params = self._params(cfg)
+        resolved_ids: list[str] = []
 
         for i, p in enumerate(prompts):
+            if isinstance(raw_custom_ids, list) and i < len(raw_custom_ids):
+                cid = str(raw_custom_ids[i])
+            else:
+                cid = str(i)
+            resolved_ids.append(cid)
             body: dict[str, Any] = {
                 **base_params,
                 "model": self.model,
@@ -123,10 +139,9 @@ class OpenAIProvider(BaseProvider):
                     },
                 }
 
-            custom_id = custom_ids[i] if isinstance(custom_ids, list) and i < len(custom_ids) else str(i)
             line = json.dumps(
                 {
-                    "custom_id": custom_id,
+                    "custom_id": cid,
                     "method": "POST",
                     "url": "/v1/responses",
                     "body": body,
@@ -143,10 +158,13 @@ class OpenAIProvider(BaseProvider):
             completion_window=opts.get("completion_window", "24h"),
             metadata={"display_name": opts.get("display_name", "batch")},
         )
-        handle = self._make_handle(batch.id, meta={
-            "custom_ids": custom_ids if isinstance(custom_ids, list) else [str(i) for i in range(len(prompts))],
-            "structured": structured,
-        })
+        handle = self._make_handle(
+            batch.id,
+            meta={
+                "custom_ids": resolved_ids,
+                "structured": structured,
+            },
+        )
         return handle
 
     # Batch status/results
@@ -162,22 +180,24 @@ class OpenAIProvider(BaseProvider):
         if status != "completed":
             raise RuntimeError(f"Batch {handle.id} not completed (status={status})")
         ofid = getattr(b, "output_file_id", None)
-        if not ofid:
-            raise RuntimeError("No output_file_id on completed batch")
+        efid = getattr(b, "error_file_id", None)
+        if not ofid and not efid:
+            raise RuntimeError("No output or error file available for completed batch")
 
-        stream = client.files.content(ofid)
-        try:
-            raw = stream.read()
-        except Exception:
-            # Fallback to iter_bytes
-            chunks = []
-            for ch in getattr(stream, "iter_bytes", lambda: [])():
-                chunks.append(ch)
-            raw = b"".join(chunks)
-        text = raw.decode("utf-8")
+        def read_file(file_id: str) -> str:
+            stream = client.files.content(file_id)
+            if hasattr(stream, "read"):
+                raw = stream.read()
+            else:
+                chunks = []
+                for ch in getattr(stream, "iter_bytes", lambda: [])():
+                    chunks.append(ch)
+                raw = b"".join(chunks)
+            return raw.decode("utf-8")
 
+        output_text = read_file(ofid) if ofid else ""
         results_by_id: dict[str, Any] = {}
-        schema = handle._meta.get("structured")  # type: ignore[attr-defined]
+        structured_cfg = handle._meta.get("structured")  # type: ignore[attr-defined]
 
         def collect_text(obj: Any) -> str:
             pieces: list[str] = []
@@ -193,15 +213,16 @@ class OpenAIProvider(BaseProvider):
             visit(obj)
             return "".join(pieces)
 
-        for line in text.splitlines():
+        for line in output_text.splitlines():
             if not line.strip():
                 continue
             try:
                 obj = json.loads(line)
-            except Exception:
+            except json.JSONDecodeError:
                 continue
             cid = obj.get("custom_id") or obj.get("id")
             if "error" in obj and obj["error"]:
+                warnings.warn(f"OpenAI batch {handle.id} error for {cid}: {obj['error']}")
                 results_by_id[str(cid)] = None
                 continue
             body = obj.get("response", {}).get("body") or obj.get("response", {})
@@ -214,21 +235,42 @@ class OpenAIProvider(BaseProvider):
                 if "output" in body:
                     txt = collect_text(body["output"])  # type: ignore[index]
                 elif "choices" in body:
-                    try:
-                        txt = body["choices"][0]["message"]["content"]
-                    except Exception:
-                        txt = None
+                    choice = body.get("choices")
+                    if isinstance(choice, list) and choice:
+                        message = choice[0].get("message") if isinstance(choice[0], dict) else None
+                        txt = message.get("content") if isinstance(message, dict) else None
             if txt is None:
+                warnings.warn(f"OpenAI batch {handle.id} missing text output for {cid}")
                 results_by_id[str(cid)] = None
                 continue
-            if schema is not None:
-                try:
-                    val = schema.parse(txt)
-                except Exception:
-                    val = None
+            if structured_cfg is not None:
+                val = parse_structured_output(
+                    structured_cfg,
+                    txt,
+                    "openai",
+                    f"batch:{handle.id}:{cid}",
+                    on_error="warn",
+                )
             else:
                 val = txt
             results_by_id[str(cid)] = val
+
+        if efid:
+            error_text = read_file(efid)
+            for line in error_text.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cid = obj.get("custom_id") or obj.get("id")
+                err = obj.get("error")
+                if err:
+                    warnings.warn(f"OpenAI batch {handle.id} error for {cid}: {err}")
+                if cid is None:
+                    cid = f"_error_{len(results_by_id)}"
+                results_by_id.setdefault(str(cid), None)
 
         order: list[str] = handle._meta.get("custom_ids")  # type: ignore[attr-defined]
         if not order:

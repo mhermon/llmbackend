@@ -1,23 +1,48 @@
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any, Optional
 
 from .base import BaseProvider
-from .util import require, map_config
+from .util import require, map_config, parse_structured_output
 from ..types import GenerationConfig, StructuredOutput
 
 
 class GeminiProvider(BaseProvider):
     """Google Gemini via google-generativeai, optional JSON schema."""
 
-    def _get_model(self):
-        genai = require("google.generativeai", "Install `google-generativeai` and set GOOGLE_API_KEY.")
+    def __init__(self, model: str, **kwargs: Any) -> None:
+        super().__init__(model, **kwargs)
+        self._genai = None
+        self._model = None
+        self._client = None
+
+    def _api_key(self) -> str:
         api_key = self.options.get("api_key") or os.getenv("GOOGLE_API_KEY")
         if not api_key:
             raise RuntimeError("Provide GOOGLE_API_KEY or pass api_key.")
-        genai.configure(api_key=api_key)
-        return genai.GenerativeModel(self.model)
+        return api_key
+
+    def _genai_module(self):
+        if self._genai is None:
+            self._genai = require(
+                "google.generativeai", "Install `google-generativeai` and set GOOGLE_API_KEY."
+            )
+        return self._genai
+
+    def _get_model(self):
+        if self._model is None:
+            genai = self._genai_module()
+            genai.configure(api_key=self._api_key())
+            self._model = genai.GenerativeModel(self.model)
+        return self._model
+
+    def _get_client(self):
+        if self._client is None:
+            genai = self._genai_module()
+            self._client = genai.Client(api_key=self._api_key())
+        return self._client
 
     def _gen_cfg(self, cfg: GenerationConfig) -> dict[str, Any]:
         return map_config(cfg, {
@@ -44,7 +69,9 @@ class GeminiProvider(BaseProvider):
 
         resp = model.generate_content(prompt, **kwargs)
         text = resp.text or ""
-        return structured.parse(text) if structured is not None else text
+        if structured is not None:
+            return parse_structured_output(structured, text, "gemini", "response")
+        return text
 
     def generate_batch(
         self,
@@ -54,20 +81,25 @@ class GeminiProvider(BaseProvider):
         batch_options: Optional[dict[str, Any]] = None,
     ) -> Any:
         """Create a Gemini batch job and return its name/ID."""
-        genai = require("google.generativeai", "Install `google-generativeai` and set GOOGLE_API_KEY.")
-        api_key = self.options.get("api_key") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise RuntimeError("Provide GOOGLE_API_KEY or pass api_key.")
-        client = genai.Client(api_key=api_key)
+        client = self._get_client()
 
         cfg = config or GenerationConfig()
         opts = batch_options or {}
-        system_instruction = opts.get("system_instruction") or (cfg.extra.get("system_instruction") if cfg else None)
+        system_instruction = opts.get("system_instruction") or (
+            cfg.extra.get("system_instruction") if cfg else None
+        )
+        raw_custom_ids = opts.get("custom_ids")
 
         inline_requests: list[dict[str, Any]] = []
         schema = structured.json_schema() if structured is not None else None
         gen_cfg = self._gen_cfg(cfg)
-        for p in prompts:
+        resolved_ids: list[str] = []
+        for idx, p in enumerate(prompts):
+            if isinstance(raw_custom_ids, list) and idx < len(raw_custom_ids):
+                cid = str(raw_custom_ids[idx])
+            else:
+                cid = str(idx)
+            resolved_ids.append(cid)
             config_block: dict[str, Any] = {**gen_cfg}
             if structured is not None:
                 config_block["response_mime_type"] = "application/json"
@@ -88,60 +120,107 @@ class GeminiProvider(BaseProvider):
             config={"display_name": opts.get("display_name", "batch")},
         )
         # Return a provider-backed handle
-        return self._make_handle(job.name, meta={"structured": structured})
+        return self._make_handle(job.name, meta={"structured": structured, "custom_ids": resolved_ids})
 
     def _batch_status(self, handle):  # type: ignore[override]
-        genai = require("google.generativeai", "Install `google-generativeai` and set GOOGLE_API_KEY.")
-        api_key = self.options.get("api_key") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise RuntimeError("Provide GOOGLE_API_KEY or pass api_key.")
-        client = genai.Client(api_key=api_key)
+        client = self._get_client()
         job = client.batches.get(handle.id)
-        return getattr(job, "state", getattr(job, "status", "unknown"))
+        state = getattr(job, "state", None)
+        return getattr(state, "name", state) or getattr(job, "status", "unknown")
 
     def _batch_results(self, handle):  # type: ignore[override]
-        genai = require("google.generativeai", "Install `google-generativeai` and set GOOGLE_API_KEY.")
-        api_key = self.options.get("api_key") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise RuntimeError("Provide GOOGLE_API_KEY or pass api_key.")
-        client = genai.Client(api_key=api_key)
+        client = self._get_client()
         job = client.batches.get(handle.id)
-        state = getattr(job, "state", getattr(job, "status", None))
-        if state not in ("SUCCEEDED", "COMPLETED", "completed"):
-            raise RuntimeError(f"Batch {handle.id} not completed (state={state})")
+        state = getattr(job, "state", None)
+        state_name = getattr(state, "name", state)
+        completed = {
+            "SUCCEEDED",
+            "COMPLETED",
+            "completed",
+            "JOB_STATE_SUCCEEDED",
+        }
+        if state_name not in completed:
+            raise RuntimeError(f"Batch {handle.id} not completed (state={state_name})")
 
-        # Best-effort extraction of text responses from job result payloads.
-        structured = handle._meta.get("structured")  # type: ignore[attr-defined]
+        structured_cfg = handle._meta.get("structured")  # type: ignore[attr-defined]
+        expected_ids: list[str] = handle._meta.get("custom_ids") or []  # type: ignore[attr-defined]
 
-        def collect_text(x):
-            out = []
-            def walk(v):
-                if isinstance(v, dict):
-                    # Gemini typical: candidates -> content -> parts -> {text}
-                    if "text" in v and isinstance(v["text"], str):
-                        out.append(v["text"])
-                    for val in v.values():
-                        walk(val)
-                elif isinstance(v, list):
-                    for val in v:
-                        walk(val)
-            walk(x)
-            return "".join(out)
+        dest = getattr(job, "dest", None)
+        inline_responses = getattr(dest, "inlined_responses", None) if dest else None
+        outputs_by_id: dict[str, Optional[str]] = {}
 
-        # Try common fields: result, results, outputs
-        payload = getattr(job, "result", None) or getattr(job, "results", None) or getattr(job, "outputs", None)
-        if payload is None:
-            # As a fallback, expose raw job object to the caller for manual handling.
-            raise RuntimeError("Could not locate results on Gemini batch job. Inspect job via client.batches.get(name).")
+        if inline_responses:
 
-        items = payload if isinstance(payload, list) else [payload]
-        texts = [collect_text(item) for item in items]
-        if structured is not None:
-            out = []
-            for t in texts:
-                try:
-                    out.append(structured.parse(t))
-                except Exception:
-                    out.append(None)
-            return out
+            for idx, entry in enumerate(inline_responses):
+                cid = expected_ids[idx] if idx < len(expected_ids) else str(idx)
+                error = getattr(entry, "error", None)
+                if error:
+                    warnings.warn(f"Gemini batch {handle.id} error for {cid}: {error}")
+                    outputs_by_id[cid] = None
+                    continue
+                outputs_by_id[cid] = self._inline_response_text(entry)
+        else:
+            # Fallback to legacy fields if inlined responses are absent.
+            payload = (
+                getattr(job, "result", None)
+                or getattr(job, "results", None)
+                or getattr(job, "outputs", None)
+            )
+            if payload is None:
+                raise RuntimeError(
+                    "Could not locate Gemini batch results. Inspect the job via client.batches.get(name)."
+                )
+            items = payload if isinstance(payload, list) else [payload]
+            for idx, item in enumerate(items):
+                cid = expected_ids[idx] if idx < len(expected_ids) else str(idx)
+                outputs_by_id[cid] = self._collect_text(item)
+
+        ordered_ids = expected_ids if expected_ids else sorted(outputs_by_id.keys())
+        texts = [outputs_by_id.get(cid) for cid in ordered_ids]
+
+        if structured_cfg is not None:
+            return [
+                parse_structured_output(
+                    structured_cfg,
+                    text,
+                    "gemini",
+                    f"batch:{handle.id}:{cid}",
+                    on_error="warn",
+                )
+                for cid, text in zip(ordered_ids, texts)
+            ]
         return texts
+
+    def _inline_response_text(self, entry: Any) -> Optional[str]:
+        """Extract best-effort text from an inline Gemini response entry."""
+        resp_obj = getattr(entry, "response", None)
+        if resp_obj is None:
+            return None
+        text_attr = getattr(resp_obj, "text", None)
+        if isinstance(text_attr, str) and text_attr:
+            return text_attr
+        to_dict = getattr(resp_obj, "to_dict", None)
+        if callable(to_dict):
+            data = to_dict()
+            if isinstance(data, (dict, list)):
+                txt = self._collect_text(data)
+                if txt:
+                    return txt
+        candidates = getattr(resp_obj, "candidates", None)
+        if candidates:
+            return self._collect_text(candidates)
+        return str(resp_obj)
+
+    def _collect_text(self, obj: Any) -> str:
+        out: list[str] = []
+        stack = [obj]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                text_val = current.get("text")
+                if isinstance(text_val, str):
+                    out.append(text_val)
+                stack.extend(current.values())
+            elif isinstance(current, list):
+                stack.extend(current)
+        return "".join(out)

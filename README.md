@@ -129,7 +129,7 @@ Batch Options
 Provider‑specific options via `batch_options`:
 
 - OpenAI: `display_name`, `completion_window`, `custom_ids`, `system`
-- Gemini: `display_name`, `system_instruction`
+- Gemini: `display_name`, `system_instruction`, `custom_ids`
 
 Batch Examples
 --------------
@@ -205,4 +205,3 @@ Notes & Limitations
 - OpenAI uses the Responses API exclusively (no legacy fallbacks). For compatible servers, use `OPENAI_BASE_URL`.
 - Local providers do not support batch or structured outputs.
 - Missing SDKs raise clear `ImportError`s.
-

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 def require(module: str, hint: str = ""):
@@ -39,3 +39,33 @@ def derive_do_sample(cfg) -> bool:
     t = getattr(cfg, "temperature", None)
     p = getattr(cfg, "top_p", None)
     return (t is not None and t > 0) or (p is not None and p < 1.0)
+
+
+def parse_structured_output(
+    structured,  # StructuredOutput, but keep untyped to avoid circular import
+    text: Optional[str],
+    provider: str,
+    source: str,
+    *,
+    on_error: str = "raise",
+) -> Any:
+    """Parse structured output with a consistent, contextual error message."""
+    if text is None or text == "":
+        msg = f"{provider}: empty structured response for {source}"
+        if on_error == "warn":
+            import warnings  # Local import to keep import-time light
+            warnings.warn(msg)
+            return None
+        raise ValueError(msg)
+    try:
+        return structured.parse(text)
+    except Exception as exc:  # pragma: no cover - depends on provider SDKs
+        snippet = text.strip()
+        if len(snippet) > 200:
+            snippet = snippet[:200] + "..."
+        msg = f"{provider}: failed to parse structured output for {source}: {exc}. Raw: {snippet}"
+        if on_error == "warn":
+            import warnings  # Local import to keep import-time light
+            warnings.warn(msg)
+            return None
+        raise ValueError(msg) from exc
