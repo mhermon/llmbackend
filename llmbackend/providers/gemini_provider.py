@@ -145,12 +145,25 @@ class GeminiProvider(BaseProvider):
         structured_cfg = handle._meta.get("structured")  # type: ignore[attr-defined]
         expected_ids: list[str] = handle._meta.get("custom_ids") or []  # type: ignore[attr-defined]
 
+        def collect_text(obj: Any) -> str:
+            out: list[str] = []
+            stack = [obj]
+            while stack:
+                current = stack.pop()
+                if isinstance(current, dict):
+                    text_val = current.get("text")
+                    if isinstance(text_val, str):
+                        out.append(text_val)
+                    stack.extend(current.values())
+                elif isinstance(current, list):
+                    stack.extend(current)
+            return "".join(out)
+
         dest = getattr(job, "dest", None)
         inline_responses = getattr(dest, "inlined_responses", None) if dest else None
         outputs_by_id: dict[str, Optional[str]] = {}
 
         if inline_responses:
-
             for idx, entry in enumerate(inline_responses):
                 cid = expected_ids[idx] if idx < len(expected_ids) else str(idx)
                 error = getattr(entry, "error", None)
@@ -160,7 +173,6 @@ class GeminiProvider(BaseProvider):
                     continue
                 outputs_by_id[cid] = self._inline_response_text(entry)
         else:
-            # Fallback to legacy fields if inlined responses are absent.
             payload = (
                 getattr(job, "result", None)
                 or getattr(job, "results", None)
@@ -173,7 +185,7 @@ class GeminiProvider(BaseProvider):
             items = payload if isinstance(payload, list) else [payload]
             for idx, item in enumerate(items):
                 cid = expected_ids[idx] if idx < len(expected_ids) else str(idx)
-                outputs_by_id[cid] = self._collect_text(item)
+                outputs_by_id[cid] = collect_text(item)
 
         ordered_ids = expected_ids if expected_ids else sorted(outputs_by_id.keys())
         texts = [outputs_by_id.get(cid) for cid in ordered_ids]
@@ -224,3 +236,4 @@ class GeminiProvider(BaseProvider):
             elif isinstance(current, list):
                 stack.extend(current)
         return "".join(out)
+

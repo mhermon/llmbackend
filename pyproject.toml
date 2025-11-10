@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmbackend"
+version = "0.1.0"
+description = "Minimal, provider-agnostic text LLM client (sync + batch)"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "LLMBackend Maintainers" }]
+keywords = ["llm", "openai", "anthropic", "gemini", "transformers", "vllm", "mlx"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.optional-dependencies]
+openai = ["openai>=1.0.0"]
+anthropic = ["anthropic"]
+gemini = ["google-generativeai"]
+transformers = ["transformers>=4.36.0"]
+vllm = ["vllm"]
+mlx = ["mlx-lm"]
+
+[project.urls]
+Homepage = "https://example.com/llmbackend"
+Repository = "https://example.com/llmbackend"
+
+[tool.setuptools.packages.find]
+include = ["llmbackend*"]
+exclude = ["tests*", "examples*", "scripts*"]

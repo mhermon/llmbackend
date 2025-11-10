@@ -93,3 +93,4 @@ class BaseProvider:
     # Helper to construct provider-backed handles
     def _make_handle(self, batch_id: str, meta: Optional[Dict[str, Any]] = None) -> Batch:
         return Batch(self, batch_id, meta or {})
+

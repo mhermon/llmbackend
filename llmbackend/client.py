@@ -10,12 +10,12 @@ from .providers.base import BaseProvider, Batch
 def _provider_registry():
     # Lazy import to keep import-time light when SDKs are missing
     return {
-        "openai": _load("package.providers.openai_provider", "OpenAIProvider"),
-        "anthropic": _load("package.providers.anthropic_provider", "AnthropicProvider"),
-        "gemini": _load("package.providers.gemini_provider", "GeminiProvider"),
-        "transformers": _load("package.providers.transformers_provider", "TransformersProvider"),
-        "vllm": _load("package.providers.vllm_provider", "VLLMProvider"),
-        "mlx": _load("package.providers.mlx_provider", "MLXProvider"),
+        "openai": _load("llmbackend.providers.openai_provider", "OpenAIProvider"),
+        "anthropic": _load("llmbackend.providers.anthropic_provider", "AnthropicProvider"),
+        "gemini": _load("llmbackend.providers.gemini_provider", "GeminiProvider"),
+        "transformers": _load("llmbackend.providers.transformers_provider", "TransformersProvider"),
+        "vllm": _load("llmbackend.providers.vllm_provider", "VLLMProvider"),
+        "mlx": _load("llmbackend.providers.mlx_provider", "MLXProvider"),
     }
 
 
@@ -61,7 +61,7 @@ class Client:
         input: str,
         config: Optional[GenerationConfig | Dict[str, Any]] = None,
         schema: Optional[StructuredOutput] = None,
-    ) -> Batch:
+    ) -> Any:
         """Generate a single response for the given `input`.
 
         - Returns a string by default.
@@ -82,7 +82,8 @@ class Client:
         - Remote providers:
           - OpenAI, Gemini: return a `Batch` handle with `.id`, `.status()`, `.results()`.
           - Anthropic: returns a completed `Batch` (immediate results).
-        - Local providers: not supported (raises when provider enforces).
+        - Local providers:
+          - transformers, vllm, mlx: return a completed `Batch` with results immediately.
 
         `batch_options` may include provider-specific fields, e.g.:
           - OpenAI: display_name, completion_window, custom_ids, system
@@ -101,7 +102,7 @@ def client(provider: str, model: str, **provider_options: Any) -> Client:
 
     Example
     -------
-    client = package.client(provider="openai", model="gpt-4o-mini", api_key="...")
+    client = llmbackend.client(provider="openai", model="gpt-4o-mini", api_key="...")
     """
     return Client(provider=provider, model=model, provider_options=provider_options or None)
 

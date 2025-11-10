@@ -277,3 +277,4 @@ class OpenAIProvider(BaseProvider):
             # Fallback to natural ordering by numeric id
             order = sorted(results_by_id.keys(), key=lambda x: int(x) if str(x).isdigit() else str(x))
         return [results_by_id.get(cid) for cid in order]
+

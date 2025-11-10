@@ -108,3 +108,4 @@ class StructuredOutput:
         if self.parser is not None:
             return self.parser(data)
         return data
+

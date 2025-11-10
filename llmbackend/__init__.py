@@ -7,10 +7,10 @@ batched interfaces.
 Quickstart
 ----------
 
-    import package
+    import llmbackend
 
     # One-off sync call
-    resp = package.get_response(
+    resp = llmbackend.get_response(
         provider="openai",
         model="gpt-4o-mini",
         input="Write a haiku about oceans.",
@@ -18,7 +18,7 @@ Quickstart
     )
 
     # Client + batch (remote providers return a handle)
-    client = package.client(provider="openai", model="gpt-4o-mini")
+    client = llmbackend.client(provider="openai", model="gpt-4o-mini")
     batch = client.submit_batch([
         "One fish.",
         "Two fish.",
@@ -39,7 +39,7 @@ Notes:
     - Structured outputs support JSON Schema or Pydantic models on remote
       providers (OpenAI, Anthropic, Gemini) only. Local providers return text
       and do not support structured outputs.
-    - Batch generation: OpenAI and Gemini return a handle with status/results; Anthropic returns a completed handle; Local providers raise.
+    - Batch generation: OpenAI and Gemini return a handle with status/results; Anthropic returns a completed handle; Local providers (transformers, vllm, mlx) return a completed handle immediately.
 """
 
 from .client import Client, client, get_response, create_batch

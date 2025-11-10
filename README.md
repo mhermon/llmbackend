@@ -28,11 +28,23 @@ Environment Variables
 Quickstart
 ----------
 
+Installation
+------------
+
+- Local checkout: `pip install -e .`
+- With provider extras (pick what you need):
+  - `pip install -e .[openai]`
+  - `pip install -e .[anthropic]`
+  - `pip install -e .[gemini]`
+  - `pip install -e .[transformers]`
+  - `pip install -e .[vllm]`
+  - `pip install -e .[mlx]`
+
 ```python
-import package
+import llmbackend
 
 # Sync: one‑off
-resp = package.get_response(
+resp = llmbackend.get_response(
     provider="openai",
     model="gpt-4o-mini",
     input="Write a haiku about oceans.",
@@ -40,7 +52,7 @@ resp = package.get_response(
 )
 
 # Batch: returns a handle
-client = package.client(provider="openai", model="gpt-4o-mini")
+client = llmbackend.client(provider="openai", model="gpt-4o-mini")
 batch = client.submit_batch([
     "Translate to German: Hello world",
     "Translate to German: How are you?",
@@ -50,7 +62,7 @@ print(batch.status())
 # later: results = batch.results()
 
 # Top‑level helper (no client)
-batch2 = package.create_batch([
+batch2 = llmbackend.create_batch([
     "Write a meta description for: ...",
     "Write a title for: ...",
 ], provider="openai", model="gpt-4o-mini", batch_options={"display_name": "seo"})
@@ -60,16 +72,16 @@ print(batch2.id)
 API Overview
 ------------
 
-- `package.get_response(provider, model, input, config=None, schema=None)` → str or parsed object
-- `package.create_batch(inputs, provider, model, config=None, schema=None, batch_options=None)` → `Batch`
-- `client = package.client(provider, model, **provider_options)`
+- `llmbackend.get_response(provider, model, input, config=None, schema=None)` → str or parsed object
+- `llmbackend.create_batch(inputs, provider, model, config=None, schema=None, batch_options=None)` → `Batch`
+- `client = llmbackend.client(provider, model, **provider_options)`
   - `client.get_response(input, config=None, schema=None)` → str or parsed object
   - `client.submit_batch(inputs, config=None, schema=None, batch_options=None)` → `Batch`
 
 Configuration
 -------------
 
-Use a simple dict or `package.GenerationConfig` with fields:
+Use a simple dict or `llmbackend.GenerationConfig` with fields:
 
 - `temperature`: float
 - `top_p`: float
@@ -84,13 +96,13 @@ Notes:
 Structured Outputs (Remote Only)
 --------------------------------
 
-Use `package.StructuredOutput` with either a JSON Schema dict or a Pydantic model.
+Use `llmbackend.StructuredOutput` with either a JSON Schema dict or a Pydantic model.
 Supported on OpenAI, Anthropic, and Gemini only. Local providers return plain text.
 
 Example:
 
 ```python
-from package import StructuredOutput
+from llmbackend import StructuredOutput
 from pydantic import BaseModel
 
 class Summary(BaseModel):
@@ -98,7 +110,7 @@ class Summary(BaseModel):
     tags: list[str]
 
 # Pydantic
-obj = package.get_response(
+obj = llmbackend.get_response(
     provider="openai",
     model="gpt-4o-mini",
     input="Summarize this text and pick tags: ...",
@@ -107,7 +119,7 @@ obj = package.get_response(
 
 # JSON Schema dict
 schema = {"type":"object","properties":{"title":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"required":["title"],"additionalProperties":False}
-data = package.get_response(
+data = llmbackend.get_response(
     provider="openai",
     model="gpt-4o-mini",
     input="Summarize this text and pick tags: ...",
@@ -121,7 +133,8 @@ Batch Behavior
 - OpenAI: Responses Batch API; handle with `.id`, `.status()`, `.results()`
 - Gemini: Batches API; handle with `.id`, `.status()`, `.results()`
 - Anthropic: Per‑prompt immediate `CompletedBatch` (no remote job)
-- Local (`transformers`, `vllm`, `mlx`): Not supported; raises on batch
+- Local (`transformers`): Runs locally (returns `CompletedBatch`)
+- Local (`vllm`, `mlx`): Runs locally (returns `CompletedBatch`)
 
 Batch Options
 -------------
@@ -137,19 +150,19 @@ Batch Examples
 OpenAI: submit, poll, and results
 ```python
 import time
-import package
+import llmbackend
 from pydantic import BaseModel
 
 class Item(BaseModel):
     title: str
 
-client = package.client("openai", "gpt-4o-mini")
+client = llmbackend.client("openai", "gpt-4o-mini")
 batch = client.submit_batch(
     inputs=[
         "Write a title for: Why the ocean matters",
         "Write a title for: Building minimal LLM clients",
     ],
-    schema=package.StructuredOutput(pydantic_model=Item),
+    schema=llmbackend.StructuredOutput(pydantic_model=Item),
     batch_options={"display_name": "titles", "completion_window": "24h", "custom_ids": ["a", "b"]},
 )
 
@@ -167,9 +180,9 @@ items = batch.results()  # [Item(...), Item(...)] in custom_id order
 Gemini: submit, poll, and results
 ```python
 import time
-import package
+import llmbackend
 
-client = package.client("gemini", "gemini-1.5-pro")
+client = llmbackend.client("gemini", "gemini-1.5-pro")
 batch = client.submit_batch(
     inputs=[
         "Summarize: The quick brown fox jumps over the lazy dog.",
@@ -191,17 +204,110 @@ summaries = batch.results()  # [str, str]
 
 Anthropic: immediate per‑prompt results
 ```python
-import package
+import llmbackend
 
-client = package.client("anthropic", "claude-3-5-sonnet-latest")
+client = llmbackend.client("anthropic", "claude-3-5-sonnet-latest")
 batch = client.submit_batch(["One", "Two", "Three"])  # Completed handle
 print(batch.status())  # "completed"
 results = batch.results()  # [str, str, str]
 ```
 
+Local Providers
+---------------
+
+Transformers: apply chat template + local batch
+```python
+import llmbackend
+
+client = llmbackend.client(
+    "transformers",
+    "mistralai/Mistral-7B-Instruct-v0.3",
+    pipeline_kwargs={"device_map": "auto"},
+    apply_chat_template=True,
+)
+batch = client.submit_batch(
+    [
+        "Draft a friendly reminder email.",
+        "Suggest a project codename.",
+    ],
+    config={
+        "max_tokens": 128,
+        "extra": {
+            "conversation": [
+                {"role": "system", "content": "You are concise and helpful."},
+            ]
+        },
+    },
+)
+print(batch.results())  # ["Reminder email ...", "Codename suggestion ..."]
+```
+
+vLLM: sampling params via `config.extra`
+```python
+import llmbackend
+
+client = llmbackend.client("vllm", "facebook/opt-125m")
+out = client.get_response(
+    "List three futuristic hobbies.",
+    config={
+        "temperature": 0.8,
+        "extra": {"stop": ["\n"], "presence_penalty": 0.5},
+    },
+)
+print(out)
+```
+
+MLX: per-prompt conversations in a batch
+```python
+import llmbackend
+
+client = llmbackend.client(
+    "mlx",
+    "mlx-community/Llama-3.2-3B-Instruct-4bit",
+    apply_chat_template=True,
+)
+batch = client.submit_batch(
+    ["Einstein story", "Why is the sky blue?"],
+    config={
+        "extra": {
+            "conversations": [
+                [{"role": "user", "content": "Write a story about Einstein."}],
+                [{"role": "user", "content": "Explain why the sky is blue."}],
+            ]
+        }
+    },
+)
+print(batch.results())
+```
+
+Provider Options (Quick Reference)
+----------------------------------
+
+- Transformers
+  - `pipeline_kwargs`: forwarded to `transformers.pipeline(...)` (e.g., `device_map`)
+  - `model_kwargs`: forwarded under `pipeline(model_kwargs=...)`
+  - `tokenizer`: optional tokenizer instance or id
+  - `apply_chat_template` (bool), `add_generation_prompt` (bool)
+
+- vLLM
+  - `llm_kwargs`: forwarded to `vllm.LLM(...)`
+  - Sampling: `config.extra` is passed to `SamplingParams` (e.g., `stop`, penalties)
+
+- MLX
+  - `load_kwargs`: forwarded to `mlx_lm.load(...)`
+  - `apply_chat_template` (bool), `add_generation_prompt` (bool)
+
+Notes:
+- When `conversation` (or `conversations`) is provided, it fully defines the chat input and the raw `prompt` string is not used for that request.
+
 Notes & Limitations
 -------------------
 
 - OpenAI uses the Responses API exclusively (no legacy fallbacks). For compatible servers, use `OPENAI_BASE_URL`.
-- Local providers do not support batch or structured outputs.
+- Local providers do not support structured outputs; batching is available on Transformers, MLX, and vLLM.
 - Missing SDKs raise clear `ImportError`s.
+- MLX extras:
+  - `config.extra["conversation"]` (or `conversations` for per-prompt data) applies the tokenizer chat template before generation.
+  - Provider option `apply_chat_template=True` wraps plain prompts in a single `user` message automatically.
+- vLLM extras: entries in `config.extra` are forwarded directly to `SamplingParams` (stop strings, penalties, etc.), and local batches return `CompletedBatch`.
+- Transformers extras: `config.extra["conversation"]`/`conversations` use the tokenizer's `apply_chat_template`, and provider option `apply_chat_template=True` wraps plain prompts automatically. All other `config.extra` values are passed straight to `pipeline(..., **kwargs)`.

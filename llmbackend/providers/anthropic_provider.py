@@ -53,3 +53,4 @@ class AnthropicProvider(BaseProvider):
         resp = client.messages.create(**params)
         text = "".join([b.text for b in resp.content if getattr(b, "type", "text") == "text"])  # type: ignore
         return structured.parse(text) if structured is not None else text
+

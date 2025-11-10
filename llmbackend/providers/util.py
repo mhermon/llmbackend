@@ -69,3 +69,4 @@ def parse_structured_output(
             warnings.warn(msg)
             return None
         raise ValueError(msg) from exc
+
