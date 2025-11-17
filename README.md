@@ -91,7 +91,7 @@ Use a simple dict or `llmbackend.GenerationConfig` with fields:
 
 Notes:
 - OpenAI single calls accept `system` via `config["extra"]["system"]`.
-- Gemini batches accept `system_instruction` via `batch_options` or `config.extra`.
+- Gemini accepts `system_instruction` via `config["extra"]["system_instruction"]` for sync and batch calls.
 
 Structured Outputs (Remote Only)
 --------------------------------
@@ -139,10 +139,10 @@ Batch Behavior
 Batch Options
 -------------
 
-Provider‑specific options via `batch_options`:
+Provider-specific options via `batch_options`:
 
 - OpenAI: `display_name`, `completion_window`, `custom_ids`, `system`
-- Gemini: `display_name`, `system_instruction`, `custom_ids`
+- Gemini: `display_name`, `custom_ids` (`system_instruction` now comes from `config.extra`)
 
 Batch Examples
 --------------

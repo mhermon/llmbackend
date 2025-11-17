@@ -87,7 +87,7 @@ class Client:
 
         `batch_options` may include provider-specific fields, e.g.:
           - OpenAI: display_name, completion_window, custom_ids, system
-          - Gemini: display_name, system_instruction
+          - Gemini: display_name (system_instruction lives in config.extra)
         """
         prompts = list(inputs)
         cfg = GenerationConfig.from_maybe_dict(config) if config is not None else None

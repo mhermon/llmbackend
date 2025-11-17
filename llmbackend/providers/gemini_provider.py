@@ -45,11 +45,19 @@ class GeminiProvider(BaseProvider):
         return self._client
 
     def _gen_cfg(self, cfg: GenerationConfig) -> dict[str, Any]:
-        return map_config(cfg, {
-            "temperature": "temperature",
-            "top_p": "top_p",
-            "max_tokens": "max_output_tokens",
-        })
+        params = map_config(
+            cfg,
+            {
+                "temperature": "temperature",
+                "top_p": "top_p",
+                "max_tokens": "max_output_tokens",
+            },
+            include_extra=False,
+        )
+        extras = dict(getattr(cfg, "extra", {}) or {})
+        extras.pop("system_instruction", None)
+        params.update(extras)
+        return params
 
     def generate(
         self,
@@ -61,6 +69,9 @@ class GeminiProvider(BaseProvider):
         cfg = config or GenerationConfig()
 
         kwargs: dict[str, Any] = {"generation_config": self._gen_cfg(cfg)}
+        system_instruction = cfg.extra.get("system_instruction")
+        if system_instruction:
+            kwargs["system_instruction"] = {"parts": [{"text": str(system_instruction)}]}
         if structured is not None:
             kwargs["response_mime_type"] = "application/json"
             schema = structured.json_schema()
@@ -85,9 +96,7 @@ class GeminiProvider(BaseProvider):
 
         cfg = config or GenerationConfig()
         opts = batch_options or {}
-        system_instruction = opts.get("system_instruction") or (
-            cfg.extra.get("system_instruction") if cfg else None
-        )
+        system_instruction = cfg.extra.get("system_instruction") if cfg else None
         raw_custom_ids = opts.get("custom_ids")
 
         inline_requests: list[dict[str, Any]] = []
@@ -236,4 +245,3 @@ class GeminiProvider(BaseProvider):
             elif isinstance(current, list):
                 stack.extend(current)
         return "".join(out)
-
