@@ -87,13 +87,57 @@ class Client:
 
         `batch_options` may include provider-specific fields, e.g.:
           - OpenAI: display_name, completion_window, custom_ids, system
-          - Gemini: display_name (system_instruction lives in config.extra)
+          - Gemini: display_name (system instructions via config.extra["system"])
         """
         prompts = list(inputs)
         cfg = GenerationConfig.from_maybe_dict(config) if config is not None else None
         return self._provider.generate_batch(
             prompts, config=cfg, structured=schema, batch_options=batch_options
         )
+
+    def get_batch_status(self, batch_id: str) -> Dict[str, Any]:
+        """Get normalized status for a batch job.
+
+        Returns a dict with:
+          - state: normalized state ("pending", "in_progress", "completed", "failed", "cancelled")
+          - provider: provider name
+          - raw_state: original provider-specific state
+          - batch_id: the batch identifier
+
+        Raises RuntimeError if batch retrieval is not supported by the provider.
+        """
+        handle = self._provider._make_handle(batch_id)
+        raw_state = self._provider._batch_status(handle)
+        normalized = self._provider._normalize_batch_state(raw_state)
+        return {
+            "state": normalized,
+            "provider": self.provider,
+            "raw_state": raw_state,
+            "batch_id": batch_id,
+        }
+
+    def fetch_batch_results(
+        self,
+        batch_id: str,
+        schema: Optional[StructuredOutput] = None,
+    ) -> List[Any]:
+        """Fetch results from a completed batch job.
+
+        Args:
+            batch_id: The batch identifier returned from submit_batch()
+            schema: Optional StructuredOutput to re-parse results (if not stored in handle)
+
+        Returns:
+            List of results in custom_id order (or submission order if no custom_ids)
+
+        Raises:
+            RuntimeError: If batch is not completed or retrieval not supported
+            ValueError: If results cannot be parsed
+        """
+        # Reconstruct handle with schema metadata if provided
+        meta = {"structured": schema} if schema else {}
+        handle = self._provider._make_handle(batch_id, meta=meta)
+        return self._provider._batch_results(handle)
 
 
 # Convenience top-level functions
@@ -136,3 +180,41 @@ def create_batch(
     """
     c = client(provider=provider, model=model, **provider_options)
     return c.submit_batch(inputs=inputs, config=config, schema=schema, batch_options=batch_options)
+
+
+def get_batch_status(
+    batch_id: str,
+    provider: str,
+    model: str,
+    **provider_options: Any,
+) -> Dict[str, Any]:
+    """Get batch status without recreating the original client.
+
+    Example:
+        status = llmbackend.get_batch_status("batch_abc123", "openai", "gpt-4o-mini")
+        if status["state"] == "completed":
+            results = llmbackend.fetch_batch_results("batch_abc123", "openai", "gpt-4o-mini")
+    """
+    c = client(provider=provider, model=model, **provider_options)
+    return c.get_batch_status(batch_id)
+
+
+def fetch_batch_results(
+    batch_id: str,
+    provider: str,
+    model: str,
+    schema: Optional[StructuredOutput] = None,
+    **provider_options: Any,
+) -> List[Any]:
+    """Fetch batch results without recreating the original client.
+
+    Example:
+        results = llmbackend.fetch_batch_results(
+            "batch_abc123",
+            "openai",
+            "gpt-4o-mini",
+            schema=StructuredOutput(pydantic_model=MyModel),
+        )
+    """
+    c = client(provider=provider, model=model, **provider_options)
+    return c.fetch_batch_results(batch_id, schema=schema)

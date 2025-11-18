@@ -56,8 +56,15 @@ class GeminiProvider(BaseProvider):
         )
         extras = dict(getattr(cfg, "extra", {}) or {})
         extras.pop("system_instruction", None)
+        extras.pop("system", None)
         params.update(extras)
         return params
+
+    def _system_instruction(self, cfg: Optional[GenerationConfig]) -> Optional[str]:
+        if cfg is None:
+            return None
+        extras = getattr(cfg, "extra", {}) or {}
+        return extras.get("system_instruction") or extras.get("system")
 
     def generate(
         self,
@@ -69,7 +76,7 @@ class GeminiProvider(BaseProvider):
         cfg = config or GenerationConfig()
 
         kwargs: dict[str, Any] = {"generation_config": self._gen_cfg(cfg)}
-        system_instruction = cfg.extra.get("system_instruction")
+        system_instruction = self._system_instruction(cfg)
         if system_instruction:
             kwargs["system_instruction"] = {"parts": [{"text": str(system_instruction)}]}
         if structured is not None:
@@ -96,7 +103,7 @@ class GeminiProvider(BaseProvider):
 
         cfg = config or GenerationConfig()
         opts = batch_options or {}
-        system_instruction = cfg.extra.get("system_instruction") if cfg else None
+        system_instruction = self._system_instruction(cfg)
         raw_custom_ids = opts.get("custom_ids")
 
         inline_requests: list[dict[str, Any]] = []
@@ -129,7 +136,14 @@ class GeminiProvider(BaseProvider):
             config={"display_name": opts.get("display_name", "batch")},
         )
         # Return a provider-backed handle
-        return self._make_handle(job.name, meta={"structured": structured, "custom_ids": resolved_ids})
+        return self._make_handle(
+            job.name,
+            meta={
+                "structured": structured,
+                "custom_ids": resolved_ids,
+                "batch_options": opts,
+            },
+        )
 
     def _batch_status(self, handle):  # type: ignore[override]
         client = self._get_client()

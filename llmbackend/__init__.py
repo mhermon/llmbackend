@@ -42,7 +42,7 @@ Notes:
     - Batch generation: OpenAI and Gemini return a handle with status/results; Anthropic returns a completed handle; Local providers (transformers, vllm, mlx) return a completed handle immediately.
 """
 
-from .client import Client, client, get_response, create_batch
+from .client import Client, client, get_response, create_batch, get_batch_status, fetch_batch_results
 from .providers.base import Batch
 from .types import GenerationConfig, StructuredOutput
 
@@ -51,6 +51,8 @@ __all__ = [
     "client",
     "get_response",
     "create_batch",
+    "get_batch_status",
+    "fetch_batch_results",
     "Batch",
     "GenerationConfig",
     "StructuredOutput",

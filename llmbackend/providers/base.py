@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional
 
 from ..types import GenerationConfig, StructuredOutput
 
@@ -22,10 +23,55 @@ class Batch:
         return self._id
 
     def status(self) -> str:
+        """Get raw provider-specific status string."""
         return self._provider._batch_status(self)
 
+    def normalized_status(self) -> str:
+        """Get normalized status: pending, in_progress, completed, failed, or cancelled."""
+        raw = self.status()
+        return self._provider._normalize_batch_state(raw)
+
     def results(self) -> List[Any]:
+        """Fetch results from completed batch."""
         return self._provider._batch_results(self)
+
+    def wait(
+        self,
+        poll_interval: float = 5.0,
+        timeout: Optional[float] = None,
+        callback: Optional[Callable[[str], None]] = None,
+    ) -> "Batch":
+        """Block until batch completes, polling at regular intervals.
+
+        Args:
+            poll_interval: Seconds between status checks (default: 5.0)
+            timeout: Maximum seconds to wait (None = wait forever)
+            callback: Optional function called with status on each poll
+
+        Returns:
+            Self for chaining (e.g., batch.wait().results())
+
+        Raises:
+            RuntimeError: If batch fails or is cancelled
+            TimeoutError: If timeout is exceeded
+        """
+        start = time.time()
+        while True:
+            normalized = self.normalized_status()
+            if callback:
+                callback(normalized)
+
+            if normalized == "completed":
+                return self
+            if normalized in ("failed", "cancelled"):
+                raise RuntimeError(f"Batch {self.id} {normalized}: {self.status()}")
+
+            if timeout and (time.time() - start) > timeout:
+                raise TimeoutError(
+                    f"Batch {self.id} did not complete within {timeout}s (status: {normalized})"
+                )
+
+            time.sleep(poll_interval)
 
     def __str__(self) -> str:
         return self._id
@@ -40,8 +86,22 @@ class CompletedBatch(Batch):
     def status(self) -> str:  # type: ignore[override]
         return "completed"
 
+    def normalized_status(self) -> str:  # type: ignore[override]
+        return "completed"
+
     def results(self) -> List[Any]:  # type: ignore[override]
         return self._results
+
+    def wait(  # type: ignore[override]
+        self,
+        poll_interval: float = 5.0,
+        timeout: Optional[float] = None,
+        callback: Optional[Callable[[str], None]] = None,
+    ) -> "CompletedBatch":
+        """CompletedBatch is already done, return immediately."""
+        if callback:
+            callback("completed")
+        return self
 
 
 class DummyProvider:
@@ -89,6 +149,36 @@ class BaseProvider:
 
     def _batch_results(self, handle: Batch) -> List[Any]:
         raise NotImplementedError("Batch results not supported for this provider")
+
+    def _normalize_batch_state(self, raw_state: str) -> str:
+        """Normalize provider-specific batch states to standard values.
+
+        Returns one of: "pending", "in_progress", "completed", "failed", "cancelled"
+        """
+        state_lower = str(raw_state).lower()
+
+        # Completed states
+        if any(x in state_lower for x in ["completed", "succeeded", "success"]):
+            return "completed"
+
+        # Failed states
+        if any(x in state_lower for x in ["failed", "error"]):
+            return "failed"
+
+        # Cancelled states
+        if any(x in state_lower for x in ["cancelled", "canceled", "expired"]):
+            return "cancelled"
+
+        # In progress states
+        if any(x in state_lower for x in ["in_progress", "running", "processing", "finalizing"]):
+            return "in_progress"
+
+        # Pending/validating states
+        if any(x in state_lower for x in ["pending", "validating", "queued"]):
+            return "pending"
+
+        # Default to in_progress for unknown states
+        return "in_progress"
 
     # Helper to construct provider-backed handles
     def _make_handle(self, batch_id: str, meta: Optional[Dict[str, Any]] = None) -> Batch:

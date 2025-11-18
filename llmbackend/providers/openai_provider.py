@@ -46,6 +46,7 @@ class OpenAIProvider(BaseProvider):
         # Forward provider extras except for pseudo-parameters handled elsewhere.
         extras = dict(getattr(cfg, "extra", {}) or {})
         extras.pop("system", None)
+        extras.pop("system_instruction", None)
         params.update(extras)
         return params
 
@@ -58,7 +59,9 @@ class OpenAIProvider(BaseProvider):
         client = self._get_client()
         cfg = config or GenerationConfig()
         params = self._params(cfg)
-        system = cfg.extra.get("system") if cfg else None
+        system = None
+        if cfg:
+            system = cfg.extra.get("system") or cfg.extra.get("system_instruction")
         if system:
             params["input"] = [
                 {"role": "system", "content": str(system)},
@@ -163,6 +166,7 @@ class OpenAIProvider(BaseProvider):
             meta={
                 "custom_ids": resolved_ids,
                 "structured": structured,
+                "batch_options": opts,
             },
         )
         return handle
@@ -277,4 +281,3 @@ class OpenAIProvider(BaseProvider):
             # Fallback to natural ordering by numeric id
             order = sorted(results_by_id.keys(), key=lambda x: int(x) if str(x).isdigit() else str(x))
         return [results_by_id.get(cid) for cid in order]
-

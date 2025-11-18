@@ -20,11 +20,21 @@ class AnthropicProvider(BaseProvider):
 
     def _params(self, cfg: GenerationConfig) -> dict[str, Any]:
         params: dict[str, Any] = {"model": self.model}
-        params.update(map_config(cfg, {
-            "max_tokens": "max_tokens",
-            "temperature": "temperature",
-            "top_p": "top_p",
-        }))
+        params.update(
+            map_config(
+                cfg,
+                {
+                    "max_tokens": "max_tokens",
+                    "temperature": "temperature",
+                    "top_p": "top_p",
+                },
+                include_extra=False,
+            )
+        )
+        extras = dict(getattr(cfg, "extra", {}) or {})
+        extras.pop("system", None)
+        extras.pop("system_instruction", None)
+        params.update(extras)
         return params
 
     def generate(
@@ -37,6 +47,9 @@ class AnthropicProvider(BaseProvider):
         cfg = config or GenerationConfig()
         params = self._params(cfg)
         params["messages"] = [{"role": "user", "content": prompt}]
+        system_prompt = cfg.extra.get("system") or cfg.extra.get("system_instruction")
+        if system_prompt:
+            params["system"] = str(system_prompt)
 
         if structured is not None:
             schema = structured.json_schema()
@@ -53,4 +66,3 @@ class AnthropicProvider(BaseProvider):
         resp = client.messages.create(**params)
         text = "".join([b.text for b in resp.content if getattr(b, "type", "text") == "text"])  # type: ignore
         return structured.parse(text) if structured is not None else text
-
